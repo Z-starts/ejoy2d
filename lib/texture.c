@@ -10,7 +10,7 @@ struct texture {
 	float invw;
 	float invh;
 	GLuint id;
-	GLuint fb; /// rt ¶ÔÓ¦µÄframe buffer
+	GLuint fb; /// rt 's frame buffer
 };
 
 struct texture_pool {
@@ -150,19 +150,36 @@ texture_active_rt(int id) {
 	return NULL;
 }
 
-
-
-void 
-texture_coord(int id, float *x, float *y) {
+int
+texture_coord(int id, float x, float y, uint16_t *u, uint16_t *v) {
 	if (id < 0 || id >= POOL.count) {
-		*x = *y = 0;
-		return;
+		*u = (uint16_t)x;
+		*v = (uint16_t)y;
+		return 1;
 	}
 	struct texture *tex = &POOL.tex[id];
-//	*x = (*x+0.5f) * tex->invw;
-//	*y = (*y+0.5f) * tex->invh;
-	*x *= tex->invw;
-	*y *= tex->invh;
+	if (tex->invw == 0) {
+		// not load the texture
+		*u = (uint16_t)x;
+		*v = (uint16_t)y;
+		return 1;
+	}
+//	x = (x+0.5f) * tex->invw;
+//	y = (y+0.5f) * tex->invh;
+	x *= tex->invw;
+	y *= tex->invh;
+	if (x > 1.0f)
+		x = 1.0f;
+	if (y > 1.0f)
+		y = 1.0f;
+
+	x *= 0xffff;
+	y *= 0xffff;
+
+	*u = (uint16_t)x;
+	*v = (uint16_t)y;
+
+	return 0;
 }
 
 void 

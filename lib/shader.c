@@ -2,52 +2,44 @@
 #include "opengl.h"
 #include "fault.h"
 #include "array.h"
+#include "renderbuffer.h"
+#include "texture.h"
+#include "matrix.h"
+#include "spritepack.h"
+#include "screen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
-#define MAX_COMMBINE 1024
-#define MAX_PROGRAM 8
+#define MAX_PROGRAM 9
 
 #define ATTRIB_VERTEX 0
 #define ATTRIB_TEXTCOORD 1
 #define ATTRIB_COLOR 2
+#define ATTRIB_ADDITIVE 3
 
-#define BUFFER_OFFSET(i) ((char *)NULL + (i))
+#define BUFFER_OFFSET(f) ((void *)&(((struct vertex *)NULL)->f))
 
 struct program {
 	GLuint prog;
-	GLint additive;
-	uint32_t arg_additive;
 	
 	GLint mask;
+	GLint st;
   float arg_mask_x;
   float arg_mask_y;
-};
-
-struct vertex {
-	float vx;
-	float vy;
-	float tx;
-	float ty;
-	uint8_t rgba[4];
-};
-
-struct quad {
-	struct vertex p[4];
 };
 
 struct render_state {
 	int current_program;
 	struct program program[MAX_PROGRAM];
 	int tex;
-	int object;
 	int blendchange;
+	int drawcall;
 	GLuint vertex_buffer;
 	GLuint index_buffer;
-	struct quad vb[MAX_COMMBINE];
+	struct render_buffer vb;
 };
 
 static struct render_state *RS = NULL;
@@ -132,22 +124,11 @@ link(struct program *p) {
 	
 	glGetProgramiv(p->prog, GL_LINK_STATUS, &status);
 	if (status == 0) {
-		fault("Can't link program");
-	}
-}
+		char buf[1024];
+		GLint len;
+		glGetProgramInfoLog(p->prog, 1024, &len, buf);
 
-static void
-set_color(GLint addi, uint32_t color) {
-	if (addi == -1)
-		return;
-	if (color == 0) {
-		glUniform3f(addi, 0,0,0);
-	} else {
-		float c[3];
-		c[0] = (float)((color >> 16) & 0xff) / 255.0f;
-		c[1] = (float)((color >> 8) & 0xff) / 255.0f;
-		c[2] = (float)(color & 0xff ) / 255.0f;
-		glUniform3f(addi, c[0],c[1],c[2]);
+		fault("link failed:%s\n", buf);
 	}
 }
 
@@ -173,19 +154,17 @@ program_init(struct program * p, const char *FS, const char *VS) {
 	glBindAttribLocation(p->prog, ATTRIB_VERTEX, "position");
 	glBindAttribLocation(p->prog, ATTRIB_TEXTCOORD, "texcoord");
 	glBindAttribLocation(p->prog, ATTRIB_COLOR, "color");
+	glBindAttribLocation(p->prog, ATTRIB_ADDITIVE, "additive");
 
 	link(p);
-
-	p->additive = glGetUniformLocation(p->prog, "additive");
-	p->arg_additive = 0;
-	set_color(p->additive, 0);
 	
 	p->mask = glGetUniformLocation(p->prog, "mask");
-  p->arg_mask_x = 0.0f;
-  p->arg_mask_y = 0.0f;
-  if (p->mask != -1) {
-    glUniform2f(p->mask, 0.0f, 0.0f);
-  }
+	p->arg_mask_x = 0.0f;
+	p->arg_mask_y = 0.0f;
+	if (p->mask != -1) {
+		glUniform2f(p->mask, 0.0f, 0.0f);
+	}
+	p->st = glGetUniformLocation(p->prog, "st");
 		
 	glDetachShader(p->prog, fs);
 	glDeleteShader(fs);
@@ -222,32 +201,68 @@ shader_unload() {
 	RS = NULL;
 }
 
-static int drawcall = 0;
 void
 reset_drawcall_count() {
-	drawcall = 0;
+	if (RS) {
+		RS->drawcall = 0;
+	}
 }
+
 int
 drawcall_count() {
-	return drawcall;
+	if (RS) {
+		return RS->drawcall;
+	} else {
+		return 0;
+	}
+}
+
+static void 
+renderbuffer_commit(struct render_buffer * rb) {
+	glEnableVertexAttribArray(ATTRIB_VERTEX);
+	glVertexAttribPointer(ATTRIB_VERTEX, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), BUFFER_OFFSET(vp.vx));
+	glEnableVertexAttribArray(ATTRIB_TEXTCOORD);
+	glVertexAttribPointer(ATTRIB_TEXTCOORD, 2, GL_UNSIGNED_SHORT, GL_TRUE, sizeof(struct vertex), BUFFER_OFFSET(vp.tx));
+	glEnableVertexAttribArray(ATTRIB_COLOR);
+	glVertexAttribPointer(ATTRIB_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(struct vertex), BUFFER_OFFSET(rgba));
+	glEnableVertexAttribArray(ATTRIB_ADDITIVE);
+	glVertexAttribPointer(ATTRIB_ADDITIVE, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(struct vertex), BUFFER_OFFSET(add));
+	glDrawElements(GL_TRIANGLES, 6 * rb->object, GL_UNSIGNED_SHORT, 0);
 }
 
 static void
 rs_commit() {
-	if (RS->object == 0)
+	struct render_buffer * rb = &(RS->vb);
+	if (rb->object == 0)
 		return;
-	drawcall++;
+	RS->drawcall++;
 	glBindBuffer(GL_ARRAY_BUFFER, RS->vertex_buffer);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(struct quad) * RS->object, RS->vb, GL_DYNAMIC_DRAW);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(struct quad) * rb->object, rb->vb, GL_DYNAMIC_DRAW);
 
-	glEnableVertexAttribArray(ATTRIB_VERTEX);
-	glVertexAttribPointer(ATTRIB_VERTEX, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), BUFFER_OFFSET(0));
-	glEnableVertexAttribArray(ATTRIB_TEXTCOORD);
-	glVertexAttribPointer(ATTRIB_TEXTCOORD, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), BUFFER_OFFSET(8));
-	glEnableVertexAttribArray(ATTRIB_COLOR);
-	glVertexAttribPointer(ATTRIB_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(struct vertex), BUFFER_OFFSET(16));
-	glDrawElements(GL_TRIANGLES, 6 * RS->object, GL_UNSIGNED_SHORT, 0);
-	RS->object = 0;
+	renderbuffer_commit(rb);
+
+	rb->object = 0;
+}
+
+void 
+shader_drawbuffer(struct render_buffer * rb, float tx, float ty, float scale) {
+	rs_commit();
+	int glid = texture_glid(rb->texid);
+	if (glid == 0)
+		return;
+	shader_texture(glid);
+	shader_program(PROGRAM_RENDERBUFFER, 0);
+	RS->drawcall++;
+	glBindBuffer(GL_ARRAY_BUFFER, rb->vbid);
+
+	float sx = scale;
+	float sy = scale;
+	screen_trans(&sx, &sy);
+	screen_trans(&tx, &ty);
+	struct program *p = &RS->program[RS->current_program];
+	glUniform4f(p->st, sx, sy, tx, ty);
+
+	renderbuffer_commit(rb);
 }
 
 void
@@ -266,65 +281,59 @@ shader_program(int n, uint32_t arg) {
 		RS->current_program = n;
 		glUseProgram(RS->program[n].prog);
 	}
-	struct program *p = &RS->program[RS->current_program];
-	if (p->arg_additive != arg) {
-		rs_commit();
-		p->arg_additive = arg;
-		set_color(p->additive, arg);
-	}
 }
 
 void
 shader_mask(float x, float y) {
 	struct program *p = &RS->program[RS->current_program];
-  if (!p || p->mask == -1)
-    return;
-  if (p->arg_mask_x == x && p->arg_mask_y == y)
-    return;
-  p->arg_mask_x = x;
-  p->arg_mask_y = y;
-  rs_commit();
+	if (!p || p->mask == -1)
+		return;
+	if (p->arg_mask_x == x && p->arg_mask_y == y)
+		return;
+	p->arg_mask_x = x;
+	p->arg_mask_y = y;
+//  rs_commit();
 	glUniform2f(p->mask, x, y);
 }
 
 void
-shader_draw(const float vb[16], uint32_t color) {
-	struct quad *q = RS->vb + RS->object;
-	int i;
-	for (i=0;i<4;i++) {
-		q->p[i].vx = vb[i*4+0];
-		q->p[i].vy = vb[i*4+1];
-		q->p[i].tx = vb[i*4+2];
-		q->p[i].ty = vb[i*4+3];
-		q->p[i].rgba[0] = (color >> 16) & 0xff;
-		q->p[i].rgba[1] = (color >> 8) & 0xff;
-		q->p[i].rgba[2] = (color) & 0xff;
-		q->p[i].rgba[3] = (color >> 24) & 0xff;
-	}
-	if (++RS->object >= MAX_COMMBINE) {
+shader_st(int prog, float x, float y, float scale) {
+	rs_commit();
+    shader_program(prog, 0);
+    struct program *p = &RS->program[prog];
+
+    if (!p || p->st == -1)
+        return;
+
+    glUniform4f(p->st, scale, scale, x, y);
+}
+
+void
+shader_draw(const struct vertex_pack vb[4], uint32_t color, uint32_t additive) {
+	if (renderbuffer_add(&RS->vb, vb, color, additive)) {
 		rs_commit();
 	}
 }
 
 static void
-draw_quad(const float *vbp, uint32_t color, int max, int index) {
-	float vb[16];
+draw_quad(const struct vertex_pack *vbp, uint32_t color, uint32_t additive, int max, int index) {
+	struct vertex_pack vb[4];
 	int i;
-	memcpy(vb, vbp, 4 * sizeof(float));	// first point
+	vb[0] = vbp[0];	// first point
 	for (i=1;i<4;i++) {
 		int j = i + index;
 		int n = (j <= max) ? j : max;
-		memcpy(vb + i * sizeof(float), vbp + n * sizeof(float), 4 * sizeof(float));
+		vb[i] = vbp[n];
 	}
-	shader_draw(vb, color);
+	shader_draw(vb, color, additive);
 }
 
 void
-shader_drawpolygon(int n, const float *vb, uint32_t color) {
+shader_drawpolygon(int n, const struct vertex_pack *vb, uint32_t color, uint32_t additive) {
 	int i = 0;
 	--n;
 	do {
-		draw_quad(vb, color, n, i);
+		draw_quad(vb, color, additive, n, i);
 		i+=2;
 	} while (i<n-1);
 }

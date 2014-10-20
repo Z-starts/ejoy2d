@@ -199,27 +199,27 @@ gen_char(int unicode, const char * utf8, int size, int outline) {
 
 
 static inline void
-set_point(float *v, int *m, int xx, int yy,int tx, int ty) {
-	v[0] = (xx * m[0] + yy * m[2]) / 1024 + m[4];
-	v[1] = (xx * m[1] + yy * m[3]) / 1024 + m[5];
-	screen_trans(&v[0],&v[1]);
+set_point(struct vertex_pack *v, int *m, int xx, int yy,int tx, int ty) {
+	v->vx = (xx * m[0] + yy * m[2]) / 1024 + m[4];
+	v->vy = (xx * m[1] + yy * m[3]) / 1024 + m[5];
+	screen_trans(&v->vx,&v->vy);
 
-	v[2] = (float)tx * (1.0f/TEX_WIDTH);
-	v[3] = (float)ty * (1.0f/TEX_HEIGHT);
+	v->tx = (uint16_t)(tx * (65535.0f/TEX_WIDTH));
+	v->ty = (uint16_t)(ty * (65535.0f/TEX_HEIGHT));
 }
 
 static void
-draw_rect(const struct dfont_rect *rect, int size, struct matrix *mat, uint32_t color) {
-	float vb[16];
+draw_rect(const struct dfont_rect *rect, int size, struct matrix *mat, uint32_t color, uint32_t additive) {
+	struct vertex_pack vb[4];
 
 	int w = (rect->w -1) * size / FONT_SIZE ;
 	int h = (rect->h -1) * size / FONT_SIZE ;
 
-	set_point(vb+0, mat->m, 0,0, rect->x, rect->y);
-	set_point(vb+4, mat->m, w*SCREEN_SCALE,0, rect->x+rect->w-1, rect->y);
-	set_point(vb+8, mat->m, w*SCREEN_SCALE,h*SCREEN_SCALE, rect->x+rect->w-1, rect->y+rect->h-1);
-	set_point(vb+12, mat->m, 0,h*SCREEN_SCALE, rect->x, rect->y+rect->h-1);
-	shader_draw(vb, color);
+	set_point(&vb[0], mat->m, 0,0, rect->x, rect->y);
+	set_point(&vb[1], mat->m, w*SCREEN_SCALE,0, rect->x+rect->w-1, rect->y);
+	set_point(&vb[2], mat->m, w*SCREEN_SCALE,h*SCREEN_SCALE, rect->x+rect->w-1, rect->y+rect->h-1);
+	set_point(&vb[3], mat->m, 0,h*SCREEN_SCALE, rect->x, rect->y+rect->h-1);
+	shader_draw(vb, color, additive);
 }
 
 static int
@@ -307,13 +307,13 @@ draw_utf8(int unicode, int cx, int cy, int size, const struct srt *srt,
 		m=&mat1;
 	}
 	matrix_srt(m, srt);
-	draw_rect(rect,size,m,color);
+	draw_rect(rect,size,m,color,arg->additive);
 
 	return (rect->w-1) * size / FONT_SIZE ;
 }
 
 static const struct label_field*
-get_rich_filed(const struct rich_text *rich, int idx) {
+get_rich_field(const struct rich_text *rich, int idx) {
   int i;
   for (i=0;i<rich->count;i++) {
     struct label_field *field = (struct label_field*)(rich->fields+i);
@@ -377,12 +377,12 @@ draw_line(const struct rich_text *rich, struct pack_label * l, struct srt *srt, 
         }
       
         if(unicode != '\n') {
-            const struct label_field *filed = get_rich_filed(rich, *pre_char_cnt+char_cnt);
-            int filed_color = color;
-            if (filed != NULL) {
-              filed_color = filed->color;
+            const struct label_field *field = get_rich_field(rich, *pre_char_cnt+char_cnt);
+            int field_color = color;
+            if (field != NULL) {
+              field_color = color_mul(field->color,  color | 0xffffff);
             }
-            cx+=draw_utf8(unicode, cx, cy, size, srt, filed_color, arg) + l->space_w;
+            cx+=draw_utf8(unicode, cx, cy, size, srt, field_color, arg) + l->space_w;
         }
     }
     *pre_char_cnt += char_cnt;
